@@ -229,7 +229,7 @@ typedef struct {
 typedef struct {
     float ax, ay, az;       // 加速度计 (g)
     float gx, gy, gz;       // 陀螺仪 (dps)
-    float temperature;      // 温度 (°C)
+    float temperature;      // 温度 (deg C)
 } icm42688_sensor_data_t;
 
 /**
