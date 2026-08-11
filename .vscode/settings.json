@@ -14,6 +14,6 @@
     "--query-driver=**",
     "--compile-commands-dir=e:\\Project\\espidf_prj\\Fusion\\build"
   ],
-  "idf.portWin": "COM9",
-  "idf.flashType": "JTAG"
+  "idf.portWin": "COM18",
+  "idf.flashType": "UART"
 }

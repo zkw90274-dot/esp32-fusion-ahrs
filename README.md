@@ -7,117 +7,177 @@
 - **Fusion AHRS 算法**：Madgwick 改进版，6轴融合
 - **运行时零漂补偿**：FusionBias 实时估计陀螺仪偏移
 - **加速度拒绝**：动态抑制运动加速度干扰
-- **实际采样周期**：自动测量并补偿采样率偏差
-- **双通信接口**：支持 SPI 和软件 I2C 模式
-- **平台抽象层**：解耦架构，便于移植到不同 MCU
-
-## 硬件
-
-### SPI 模式
-
-| 功能 | GPIO |
-|------|------|
-| SPI_SCLK | 12 |
-| SPI_MOSI | 11 |
-| SPI_MISO | 10 |
-| SPI_CS | 9 |
-
-### I2C 模式
-
-| 功能 | GPIO | 说明 |
-|------|------|------|
-| I2C_SCL | 12 | 时钟线 (需 4.7k 上拉) |
-| I2C_SDA | 10 | 数据线 (需 4.7k 上拉) |
-| CS | 9 | **必须接 VDDIO (3.3V)** |
-| AD0 | 11 | 地址选择 (接 GND = 0x68) |
-
-> **重要**: I2C 模式下 CS 必须接高电平，否则芯片进入 SPI 模式。
-
-目标芯片：ESP32-S3
-
-## 构建与烧录
-
-需要 [ESP-IDF v5.4.3](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html) 环境。
-
-```bash
-idf.py set-target esp32s3
-idf.py build
-idf.py -p COM9 flash monitor
-```
-
-## 串口输出格式
-
-```
-roll,pitch,yaw
-```
-
-单位：度
-
-## 关键参数
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| 采样率 | 200Hz | 5ms 周期 |
-| 陀螺仪量程 | +/-2000 dps | 必须与实际配置匹配 |
-| AHRS 增益 | 0.5 | 融合增益 |
-| 加速度拒绝 | 10 deg | 运动抑制阈值 |
-
-## 项目结构
-
-```
-main/
-├── platform.h              # 平台抽象接口 (不改)
-├── platform_esp32.c        # ESP32 平台实现 (移植时重写)
-├── hw_spi.h                # 硬件 SPI 接口 (不改)
-├── hw_spi.c                # ESP32 SPI 实现 (移植时重写)
-├── hw_i2c_soft.h           # 软件 I2C 接口 (不改)
-├── hw_i2c_soft_esp32.c     # ESP32 软件 I2C 实现 (移植时重写)
-├── icm42688.h/c            # ICM-42688 SPI 驱动
-├── icm42688_i2c.h/c        # ICM-42688 I2C 驱动
-├── hello_world_main.c      # 应用层 (不改)
-├── Fusion*.c/h             # Fusion 算法库
-└── CMakeLists.txt
-```
+- **统一驱动架构**：支持 SPI 和 I2C 无缝切换
+- **HAL 抽象层**：换 MCU 只需实现 HAL 接口，驱动层和应用层零修改
 
 ## 架构设计
 
 ```
-┌─────────────────────────────────────┐
-│         应用层 (不改)                │
-│    hello_world_main.c               │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│       设备驱动层 (不改)              │
-│    icm42688_i2c.c / icm42688.c      │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│       硬件抽象层 (不改)              │
-│    hw_i2c_soft.h / hw_spi.h         │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│     平台实现层 (移植时重写)          │
-│  hw_i2c_soft_esp32.c / platform.c   │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    app_main.c (应用层)                    │
+│  GPIO 宏定义 → IMU 创建 → AHRS 计算 → 欧拉角输出        │
+└─────────────────────────┬───────────────────────────────┘
+                          │ icm42688_create_spi/i2c()
+                          │ icm42688_read_all()
+┌─────────────────────────▼───────────────────────────────┐
+│              icm42688_unified.c (驱动层)                  │
+│  传感器初始化 → 寄存器读写 → 数据转换                     │
+│  通过 HAL 接口访问硬件，零平台依赖                        │
+└────────┬────────────────────────────────┬───────────────┘
+         │ hal_spi_read_regs()            │ hal_i2c_read_regs()
+┌────────▼────────┐            ┌─────────▼─────────┐
+│ hal_spi_esp32.c │            │ hal_i2c_esp32.c   │
+│ ESP32 SPI 实现   │            │ ESP32 I2C 实现     │
+└─────────────────┘            └───────────────────┘
 ```
 
-### 移植到其他 MCU
+## 目录结构
 
-只需重写两个文件：
-1. `platform_xxx.c` - 延时、日志、任务管理
-2. `hw_i2c_soft_xxx.c` - GPIO 操作 (SDA/SCL 读写)
+```
+main/
+├── hal/                          # HAL 抽象层（换 MCU 只改这里）
+│   ├── hal_i2c.h                 # I2C 接口定义
+│   ├── hal_spi.h                 # SPI 接口定义
+│   └── esp32/
+│       ├── hal_i2c_esp32.c       # ESP32 I2C 实现
+│       └── hal_spi_esp32.c       # ESP32 SPI 实现
+│
+├── icm42688_unified.h            # 统一传感器驱动接口
+├── icm42688_unified.c            # 统一传感器驱动实现
+│
+├── platform.h / platform_esp32.c # 平台抽象层
+├── Fusion*.h / Fusion*.c         # Fusion 算法库
+└── app_main.c                    # 应用层（零平台依赖）
+```
 
-应用层和驱动层完全不用修改。
+## 硬件接线
+
+### SPI 模式
+
+| ICM-42688-P | ESP32-S3 | 说明 |
+|-------------|----------|------|
+| VDD | 3.3V | 电源 |
+| GND | GND | 地线 |
+| SCLK | GPIO12 | SPI 时钟 |
+| MOSI (SDI) | GPIO11 | 主出从入 |
+| MISO (SDO) | GPIO10 | 主入从出 |
+| CS | GPIO9 | 片选 |
+| AD0 | GND | 地址 = 0x68 |
+| INT1 | GPIO13 | 数据就绪中断（可选） |
+
+### I2C 模式
+
+| ICM-42688-P | ESP32-S3 | 说明 |
+|-------------|----------|------|
+| VDD | 3.3V | 电源 |
+| GND | GND | 地线 |
+| SCL | GPIO12 | 时钟线 (需 4.7k 上拉) |
+| SDA | GPIO10 | 数据线 (需 4.7k 上拉) |
+| CS | 3.3V | **必须接高电平** |
+| AD0 | GND | 地址 = 0x68 |
+| INT1 | GPIO13 | 数据就绪中断（可选） |
+
+## 快速开始
+
+### 1. 编译
+
+```bash
+idf.py build
+```
+
+### 2. 烧录
+
+```bash
+idf.py -p COMx flash
+```
+
+### 3. 监听
+
+```bash
+idf.py -p COMx monitor
+```
+
+### 4. 输出示例
+
+```
+-0.53,-0.80,0.01
+-0.53,-0.80,0.01
+-0.53,-0.80,0.01
+```
+
+格式：`roll,pitch,yaw`（单位：度）
+
+## 配置说明
+
+### 接口选择
+
+在 `app_main.c` 中修改：
+
+```c
+/* 接口选择：0=SPI, 1=I2C */
+#define USE_I2C         0
+```
+
+### 采样参数
+
+```c
+#define SAMPLE_RATE     100     /* Hz */
+#define SAMPLE_DT_MS    10      /* 轮询周期 (ms) */
+```
+
+### Fusion 参数
+
+```c
+#define GYRO_RANGE      2000.0f     /* 陀螺仪量程 (dps) */
+#define AHRS_GAIN       0.3f        /* 融合增益 (0-1) */
+#define ACC_REJECTION   10.0f       /* 加速度拒绝阈值 (度) */
+```
+
+## 移植到其他 MCU
+
+只需 3 步：
+
+### 1. 复制 HAL 目录
+
+```bash
+cp -r main/hal/esp32 main/hal/stm32
+```
+
+### 2. 实现 HAL 接口
+
+```c
+// hal/stm32/hal_spi_stm32.c
+hal_spi_t *hal_spi_create(const hal_spi_config_t *config) { ... }
+void hal_spi_destroy(hal_spi_t *spi) { ... }
+int hal_spi_write_reg(hal_spi_t *spi, uint8_t reg, uint8_t value) { ... }
+int hal_spi_read_reg(hal_spi_t *spi, uint8_t reg, uint8_t *value) { ... }
+int hal_spi_read_regs(hal_spi_t *spi, uint8_t reg, uint8_t *buf, uint16_t len) { ... }
+```
+
+### 3. 更新 CMakeLists.txt
+
+```cmake
+idf_component_register(SRCS
+    "platform_stm32.c"
+    "hal/stm32/hal_spi_stm32.c"
+    "hal/stm32/hal_i2c_stm32.c"
+    "icm42688_unified.c"
+    ...
+)
+```
+
+**驱动层和应用层零修改！**
 
 ## 依赖
 
-- ESP-IDF v5.4.3
-- [xioTechnologies/Fusion](https://github.com/xioTechnologies/Fusion) (已包含)
+- ESP-IDF v5.4+
+- [xioTechnologies/Fusion](https://github.com/xioTechnologies/Fusion)（已包含）
 
 ## 参考
 
 - [ICM-42688-P Datasheet](https://invensense.tdk.com/wp-content/uploads/2020/11/ds-000347-icm-42688-p-datasheet.pdf)
 - [Fusion 库文档](https://github.com/xioTechnologies/Fusion)
-- [VOFA+ 上位机](https://vofa.plus/)
+
+## 许可证
+
+MIT License

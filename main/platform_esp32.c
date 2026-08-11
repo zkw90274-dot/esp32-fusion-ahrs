@@ -26,7 +26,12 @@ static platform_log_level_t s_log_level = PLATFORM_LOG_INFO;
 
 void platform_delay_ms(uint32_t ms)
 {
-    vTaskDelay(pdMS_TO_TICKS(ms));
+    /* 非零延时至少等待一个 tick，避免 vTaskDelay(0) 导致任务不阻塞 */
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    if (ticks == 0 && ms > 0) {
+        ticks = 1;
+    }
+    vTaskDelay(ticks);
 }
 
 void platform_delay_us(uint32_t us)
@@ -66,7 +71,7 @@ int platform_task_create(platform_task_func_t func,
     ret = xTaskCreate(
         (TaskFunction_t)func,
         name,
-        stack_size / sizeof(StackType_t),  // ESP-IDF 使用字节，FreeRTOS 使用 StackType_t
+        stack_size,  // ESP-IDF 的 xTaskCreate 栈参数单位是字节
         arg,
         (UBaseType_t)priority,
         &task_handle
